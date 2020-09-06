@@ -5,9 +5,10 @@ import time
 import random
 
 pygame.font.init()
-
+gen = 0
 WIN_WIDTH = 500
 WIN_HEIGHT = 800
+WIN = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
 
 BIRD_IMGS = [pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird1.png"))), pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird2.png"))), pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird3.png")))]
 PIPE_IMG = pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "pipe.png")))
@@ -121,7 +122,7 @@ class Pipe:
         bottom_offset = (self.x - bird.x, self.bottom - round(bird.y))
 
         b_point = bird_mask.overlap(bottom_mask, bottom_offset)
-        t_point = bird_mask.overlap(bottom_mask, bottom_offset)
+        t_point = bird_mask.overlap(top_mask, top_offset)
 
         if b_point or t_point:
             return True
@@ -145,7 +146,7 @@ class Base:
 
         if self.x1 + self.WIDTH < 0:
             self.x1 = self.x2 + self.WIDTH
-        
+
         if self.x2 + self.WIDTH < 0:
             self.x2 = self.x1 + self.WIDTH
 
@@ -155,60 +156,127 @@ class Base:
 
 
 
-def draw_window(win, bird, pipes, base, score):
+def draw_window(win, birds, pipes, base, score, gen):
     win.blit(BG_IMG, (0,0))
-    text = STAT_FONT.render(str(score), 1, (255,255,255))
-    win.blit(text, (WIN_WIDTH - 10 - text.get_width(), 10))
+
     for pipe in pipes:
         pipe.draw(win)
 
     base.draw(win)
-    bird.draw(win)
+    for bird in birds:
+        bird.draw(win)
+
+    # score
+    score_label = STAT_FONT.render("Score: " + str(score),1,(255,255,255))
+    win.blit(score_label, (WIN_WIDTH - score_label.get_width() - 15, 10))
+
+    # generations
+    score_label = STAT_FONT.render("Gens: " + str(gen-1),1,(255,255,255))
+    win.blit(score_label, (10, 10))
+
+    # alive
+    score_label = STAT_FONT.render("Alive: " + str(len(birds)),1,(255,255,255))
+    win.blit(score_label, (10, 50))
     
     pygame.display.update()
 
 
-def main():
-    bird = Bird(230,350)
-    pipes = [Pipe(700)]
+def main(genomes, config):
+    nets = []
+    ge = []
+    birds = []
+
+    global WIN, gen
+    win = WIN
+    gen += 1
+
+    for _,g in genomes:
+        nets.append(neat.nn.FeedForwardNetwork.create(g, config))
+        g.fitness = 0
+        ge.append(g)
+        birds.append(Bird(200,200))
+
+    pipes = [Pipe(300)]
     base = Base(700)
     win = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
     run = True
     score = 0
-    
+
     while run:
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
                 run = False
 
+        pipe_ind = 0
+        if len(birds) > 0:
+            if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
+                pipe_ind = 1
+        else:
+            run = False
+            break
+
+        for i, bird in enumerate(birds):
+            bird.move()
+            ge[i].fitness += 0.1
+
+            output = nets[i].activate((bird.y, abs(bird.y - pipes[pipe_ind].height), abs(bird.y - pipes[pipe_ind].bottom)))
+            
+
+            if output[0] > 0.5:
+                bird.jump()
+
+            if bird.y + bird.img.get_height() >= 730 or bird.y + bird.img.get_height() <= 0:
+                birds.pop(i)
+                nets.pop(i)
+                ge.pop(i)
 
         add_pipe = False
         rem = []
         for pipe in pipes:
-            if pipe.collide(bird):
-                pass
+            for i, bird in enumerate(birds):
+                if pipe.collide(bird):
+                    ge[i].fitness -= 1
+                    birds.pop(i)
+                    nets.pop(i)
+                    ge.pop(i)
 
-            pipe.move()
+                if not pipe.passed and pipe.x < bird.x:
+                    pipe.passed = True
+                    add_pipe = True
 
             if pipe.x + pipe.PIPE_TOP.get_width() < 0:
                 rem.append(pipe)
-
-            if not pipe.passed and pipe.x < bird.x:
-                pipe.passed = True
-                add_pipe = True
+            pipe.move()
 
         if add_pipe:
             score += 1
+            for g in ge:
+                g.fitness += 5
             pipes.append(Pipe(700))
-        
+
         for r in rem:
             pipes.remove(r)
-        
-        # bird.move()
+            
+
         base.move()
-        draw_window(win, bird, pipes, base, score)
 
-    pygame.quit()
-    quit()
+        draw_window(win, birds, pipes, base, score, gen)
 
-main()
+def run(config_path):
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
+
+    population = neat.Population(config)
+
+    population.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    population.add_reporter(stats)
+
+    winner = population.run(main,50)
+
+if __name__ == "__main__":
+    local_dir = os.path.dirname(__file__)
+    config = os.path.join(local_dir, "config-feedingforward.txt")
+    run(config)
