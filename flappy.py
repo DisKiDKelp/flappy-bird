@@ -3,11 +3,18 @@ import pygame
 import neat
 import time
 import random
+import math
+
+# Difficulty for computer
+PIPE_GAP_SIZE     = 200
+NEW_PIPE_DISTANCE = 700
+
 
 pygame.font.init()
 gen = 0
 WIN_WIDTH = 500
 WIN_HEIGHT = 800
+AVG_FIT_LABEL_Y = 600
 WIN = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
 
 BIRD_IMGS = [pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird1.png"))), pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird2.png"))), pygame.transform.scale2x(pygame.image.load(os.path.join("IMGS", "bird3.png")))]
@@ -29,8 +36,11 @@ class Bird:
         self.tick_count = 0
         self.vel = 0
         self.height = self.y
-        self.img_count = 0
+        self.game_tick = 0
+        self.curr_img = 0
+        self.prev_edge = 0
         self.img = self.IMGS[0]
+        self.fitness = 0
 
     def jump(self):
         self.vel = -10.5
@@ -58,23 +68,27 @@ class Bird:
                 self.tilt -= self.ROT_VEL
 
     def draw(self, win):
-        self.img_count += 1
+        self.game_tick += 1
 
-        if self.img_count < self.ANIMATION_TIME:
-            self.img = self.IMGS[0]
-        elif self.img_count < self.ANIMATION_TIME*2:
-            self.img = self.IMGS[1]
-        elif self.img_count < self.ANIMATION_TIME*3:
-            self.img = self.IMGS[2]
-        elif self.img_count < self.ANIMATION_TIME*4:
-            self.img = self.IMGS[1]
-        elif self.img_count < self.ANIMATION_TIME*4 + 1 :
-            self.img = self.IMGS[0]
-            self.img_count = 0
+        if self.game_tick == self.ANIMATION_TIME:
+            if self.curr_img != 1:
+                self.img = self.IMGS[1]
+                self.curr_img = 1
+                self.game_tick = 0
+            elif self.prev_edge == 0:
+                self.img = self.IMGS[2]
+                self.curr_img = 2
+                self.prev_edge = 2
+                self.game_tick = 0
+            else:
+                self.img = self.IMGS[0]
+                self.curr_img = 0
+                self.prev_edge = 0
+                self.game_tick = 0
 
         if self.tilt <= -80:
             self.img = self.IMGS[1]
-            self.img_count = self.ANIMATION_TIME*2
+            self.img_count = self.ANIMATION_TIME
 
         rotated_image = pygame.transform.rotate(self.img, self.tilt)
         new_rect = rotated_image.get_rect(center=self.img.get_rect(topleft=(self.x, self.y)).center)
@@ -85,7 +99,7 @@ class Bird:
 
 
 class Pipe:
-    GAP = 200
+    GAP = PIPE_GAP_SIZE
     VEL = 3
 
     def __init__(self, x):
@@ -155,6 +169,9 @@ class Base:
         win.blit(self.IMG, (self.x2, self.y))
 
 
+def roundup(x, roundingNum):
+    return int(math.ceil(x / roundingNum)) * roundingNum
+
 
 def draw_window(win, birds, pipes, base, score, gen):
     win.blit(BG_IMG, (0,0))
@@ -177,7 +194,14 @@ def draw_window(win, birds, pipes, base, score, gen):
     # alive
     score_label = STAT_FONT.render("Alive: " + str(len(birds)),1,(255,255,255))
     win.blit(score_label, (10, 50))
-    
+
+    # Display Average fitness beneath the lowest bird every half a second to prevent flashing
+    score_label = STAT_FONT.render(str('%.2f'%avg_fitness),1,(255,255,255))
+    global AVG_FIT_LABEL_Y
+    if ticks % 15 == 0:
+        AVG_FIT_LABEL_Y = roundup(min_height,100)+100
+
+    win.blit(score_label,(200, AVG_FIT_LABEL_Y))
     pygame.display.update()
 
 
@@ -186,9 +210,13 @@ def main(genomes, config):
     ge = []
     birds = []
 
-    global WIN, gen
+    global WIN, gen, avg_fitness, min_height, ticks, AVG_FIT_LABEL_Y
     win = WIN
     gen += 1
+
+    # Game ticks for changing average fitness score y
+    ticks = 0
+    
 
     for _,g in genomes:
         nets.append(neat.nn.FeedForwardNetwork.create(g, config))
@@ -196,14 +224,14 @@ def main(genomes, config):
         ge.append(g)
         birds.append(Bird(200,200))
 
-    pipes = [Pipe(300)]
+    pipes = [Pipe(500)]
     base = Base(700)
     win = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
     run = True
     score = 0
 
     while run:
-        
+        ticks += 1
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -212,6 +240,8 @@ def main(genomes, config):
 
         pipe_ind = 0
         if len(birds) > 0:
+            avg_fitness = int(sum([ge[i].fitness for i, bird in enumerate(birds)])/len(birds))
+            min_height = max([bird.y for bird in birds])
             if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
                 pipe_ind = 1
         else:
@@ -221,10 +251,16 @@ def main(genomes, config):
         for i, bird in enumerate(birds):
             bird.move()
             ge[i].fitness += 0.1
+            bird.fitness = ge[i].fitness
 
-            output = nets[i].activate((bird.y, abs(bird.y - pipes[pipe_ind].height), abs(bird.y - pipes[pipe_ind].bottom)))
-            
+            # Actually What the computer sees
+            output = nets[i].activate((
+                bird.y,
+                abs(bird.y - pipes[pipe_ind].height),
+                abs(bird.y - pipes[pipe_ind].bottom)
+            ))
 
+            # What actually makes the computer jump, an answer given based on what the computer sees
             if output[0] > 0.5:
                 bird.jump()
 
@@ -255,11 +291,11 @@ def main(genomes, config):
             score += 1
             for g in ge:
                 g.fitness += 5
-            pipes.append(Pipe(700))
+            pipes.append(Pipe(NEW_PIPE_DISTANCE))
 
         for r in rem:
             pipes.remove(r)
-            
+
 
         base.move()
 
